@@ -291,7 +291,7 @@ def _extract_photo_link(article):
         response = _session.get(url, timeout=_timeout)
         html = response.html.html
         match = _image_regex.search(html)
-        ret.append(url.replace("&amp;", "&"))
+        ret.append(match.groups()[0].replace("&amp;", "&"))
     return ret
 
 
