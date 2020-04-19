@@ -279,18 +279,19 @@ def _extract_time(article):
 
 
 def _extract_photo_link(article):
-    match = _photo_link.search(article.html)
+    match = _photo_link.findall(article.html)
     if not match:
         return None
+    ret = []
+    for m in match:
+        url = f"{_base_url}{m}"
 
-    url = f"{_base_url}{match.groups()[0]}"
-
-    response = _session.get(url, timeout=_timeout)
-    html = response.html.html
-    match = _image_regex.search(html)
-    if match:
-        return match.groups()[0].replace("&amp;", "&")
-    return None
+        response = _session.get(url, timeout=_timeout)
+        html = response.html.html
+        match = _image_regex.search(html)
+        if match:
+            ret.append(m.replace("&amp;", "&"))
+    return ret
 
 
 def _extract_image(article):
