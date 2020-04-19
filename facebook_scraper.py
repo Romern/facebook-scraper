@@ -124,6 +124,8 @@ def _get_page_posts(path, pages=10, timeout=5, sleep=0, credentials=None, extra_
                 return
 
             cursor = _find_cursor(cursor_blob)
+            if not cursor:
+                return
             next_url = f'{_base_url}{cursor}'
 
             if sleep:
