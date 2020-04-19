@@ -6,9 +6,12 @@ import re
 import sys
 import time
 import warnings
+import traceback
+import pickle
+
 from datetime import datetime
 from urllib import parse as urlparse
-
+from requests.adapters import HTTPAdapter
 from requests import RequestException
 from requests_html import HTML, HTMLSession
 
@@ -62,43 +65,27 @@ def get_posts(account=None, group=None, **kwargs):
         return _get_group_posts(path, **kwargs)
 
 
-def _get_page_posts(path, pages=10, timeout=5, sleep=0, credentials=None, extra_info=False):
+def _get_page_posts(path, pages=10, timeout=5, sleep=0, credentials=None, extra_info=False, begin_url=None, max_retries=5):
     """Gets posts for a given account."""
     global _session, _timeout
 
-    url = f'{_base_url}/{path}'
-
     _session = HTMLSession()
     _session.headers.update(_headers)
+    a = HTTPAdapter(max_retries=max_retries)
+    b = HTTPAdapter(max_retries=max_retries)
+    _session.mount('http://', a)
+    _session.mount('https://', b)
 
     if credentials:
         _login_user(*credentials)
 
     _timeout = timeout
 
-    response = _session.get(url, timeout=_timeout)
-    html = HTML(html=response.html.html.replace('<!--', '').replace('-->', ''))
-    cursor_blob = html.html
-
-    while True:
-        for article in html.find('article'):
-            post = _extract_post(article)
-            if extra_info:
-                post = fetch_share_and_reactions(post)
-            yield post
-
-        pages -= 1
-        if pages <= 0:
-            return
-
-        cursor = _find_cursor(cursor_blob)
-        next_url = f'{_base_url}{cursor}'
-
-        if sleep:
-            time.sleep(sleep)
-
+    html = None
+    cursor_blob = None
+    if begin_url:
         try:
-            response = _session.get(next_url, timeout=timeout)
+            response = _session.get(begin_url, timeout=timeout)
             response.raise_for_status()
             data = json.loads(response.text.replace('for (;;);', '', 1))
         except (RequestException, ValueError):
@@ -109,6 +96,59 @@ def _get_page_posts(path, pages=10, timeout=5, sleep=0, credentials=None, extra_
                 html = HTML(html=action['html'], url=_base_url)
             elif action['cmd'] == 'script':
                 cursor_blob = action['code']
+        if not html:
+            html = HTML(html=response.html.html.replace('<!--', '').replace('-->', ''))
+        if not cursor_blob:
+            cursor_blob = html.html
+    else:
+        url = f'{_base_url}/{path}'
+        response = _session.get(url, timeout=_timeout)
+        html = HTML(html=response.html.html.replace('<!--', '').replace('-->', ''))
+        cursor_blob = html.html
+    cursor = None
+    next_url = None
+    try:
+        while True:
+            for article in html.find('article'):
+                try:
+                    post = _extract_post(article)
+                    if extra_info:
+                        post = fetch_share_and_reactions(post)
+                    yield post
+                except:
+                    print(traceback.format_exc())
+                    print("But continuing...")
+
+            pages -= 1
+            if pages <= 0:
+                return
+
+            cursor = _find_cursor(cursor_blob)
+            next_url = f'{_base_url}{cursor}'
+
+            if sleep:
+                time.sleep(sleep)
+
+            try:
+                response = _session.get(next_url, timeout=timeout)
+                response.raise_for_status()
+                data = json.loads(response.text.replace('for (;;);', '', 1))
+            except (RequestException, ValueError):
+                raise
+
+            for action in data['payload']['actions']:
+                if action['cmd'] == 'replace':
+                    html = HTML(html=action['html'], url=_base_url)
+                elif action['cmd'] == 'script':
+                    cursor_blob = action['code']
+    except:
+        print(f"Current url: {next_url}")
+        print("-----------------------------------")
+        print(f"Current page (total-cur_page): {pages}")
+        print("-----------------------------------")
+        print("Traceback:")
+        print(traceback.format_exc())
+        raise
 
 
 def _get_group_posts(path, pages=10, timeout=5, sleep=0, credentials=None, extra_info=False):
@@ -164,8 +204,15 @@ def _extract_post(article):
         'shares':  _find_and_search(article, 'footer', _shares_regex, _parse_int) or 0,
         'post_url': _extract_post_url(article),
         'link': _extract_link(article),
+        'story_attachment_style': _extract_story_attachment_style(article)
     }
 
+def _extract_story_attachment_style(article):
+    try:
+        data_ft = json.loads(article.attrs["data-ft"])
+        return data_ft["story_attachment_style"]
+    except (KeyError, ValueError):
+        return None
 
 def _extract_post_id(article):
     try:
